@@ -1,0 +1,404 @@
+pub mod app;
+pub mod views;
+
+use anyhow::Result;
+use ratatui::{
+    Terminal,
+    backend::CrosstermBackend,
+    crossterm::{
+        event::{
+            self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind,
+            KeyModifiers, MouseEventKind,
+        },
+        execute,
+        terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
+    },
+};
+use std::io;
+use tokio::sync::mpsc;
+
+use app::{App, AppEvent, AppView, Tab};
+use views::{
+    create_ticket::{self, CreateState},
+    filter_panel::{self, FilterPanelResult, FilterPanelState},
+    help,
+    settings::{self, SettingsState},
+    ticket_detail::{self, DetailState},
+    ticket_list,
+    transition_picker::{self, TransitionState},
+};
+
+use crate::{
+    config::{Config, DefaultFilter, Templates, config_dir, save_settings},
+    git::{branch_name, find_branch_for_ticket, new_pr_url},
+    jira::JiraClient,
+};
+
+pub async fn run_tui(config: Config, templates: Templates, client: JiraClient) -> Result<()> {
+    enable_raw_mode()?;
+    let mut stdout = io::stdout();
+    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
+    let backend = CrosstermBackend::new(stdout);
+    let mut terminal = Terminal::new(backend)?;
+
+    let (event_tx, mut event_rx) = mpsc::channel(64);
+    let mut app = App::new(config, templates.templates, client, event_tx);
+    let mut create_state = CreateState::new();
+    let mut settings_state = SettingsState::new(&app.config);
+    let mut filter_panel_state = FilterPanelState::new(&app.filter);
+    let mut transition_state = TransitionState::new();
+    let mut detail_state = DetailState::new();
+
+    app.trigger_load();
+
+    // Load current user for assignment toggle
+    {
+        let client = app.client.clone();
+        let tx = app.event_tx.clone();
+        tokio::spawn(async move {
+            if let Ok(user) = client.get_myself().await {
+                if let Some(name) = user.name {
+                    let _ = tx.send(AppEvent::UserLoaded(name)).await;
+                }
+            }
+        });
+    }
+
+    loop {
+        terminal.draw(|frame| {
+            let full_area = frame.area();
+            let (content_area, bar_area) = help::split_with_bar(full_area);
+
+            // Draw the active view in the content area
+            match &app.view {
+                AppView::TicketList => {
+                    ticket_list::draw(&mut app, frame, content_area);
+                    if detail_state.branch_editing {
+                        ticket_detail::draw_branch_editor(&mut detail_state, frame, content_area);
+                    }
+                }
+                AppView::TicketDetail { .. } => ticket_detail::draw(&app, &mut detail_state, frame, content_area),
+                AppView::CreateTicket => {
+                    create_ticket::draw(&app, &mut create_state, frame, content_area)
+                }
+                AppView::Settings => settings::draw(&app, &mut settings_state, frame, content_area),
+                AppView::FilterPanel => {
+                    // Draw ticket list as background, then overlay the popup
+                    ticket_list::draw(&mut app, frame, content_area);
+                    filter_panel::draw(&app, &mut filter_panel_state, frame, content_area);
+                }
+                AppView::TransitionPicker { .. } => {
+                    let from_list = transition_state.return_to_list;
+                    if from_list {
+                        ticket_list::draw(&mut app, frame, content_area);
+                    } else {
+                        ticket_detail::draw(&app, &mut detail_state, frame, content_area);
+                    }
+                    transition_picker::draw(&app, &mut transition_state, frame, content_area);
+                }
+            }
+
+            // Global bottom status bar
+            let vname = help::view_name(&app.view);
+            if matches!(app.view, AppView::TicketList) && detail_state.branch_editing {
+                ticket_detail::draw_bar(&app, &detail_state, frame, bar_area);
+            } else if matches!(app.view, AppView::TicketList) {
+                ticket_list::draw_bar(&app, frame, bar_area);
+            } else if matches!(app.view, AppView::TicketDetail { .. }) {
+                ticket_detail::draw_bar(&app, &detail_state, frame, bar_area);
+            } else {
+                help::draw_status_bar(frame, bar_area, help::status_bar_hints(vname), app.all.loading || app.mine.loading);
+            }
+
+            // Help popup (drawn last so it's on top)
+            if app.show_help {
+                help::draw(frame, full_area);
+            }
+        })?;
+
+        tokio::select! {
+            Some(app_event) = event_rx.recv() => {
+                let was_picking = matches!(app.view, AppView::TransitionPicker { .. });
+                let is_applied = matches!(app_event, AppEvent::TransitionApplied(_));
+                app.handle_event(app_event);
+                // Refresh settings state when config changes
+                if matches!(app.view, AppView::Settings) {
+                    settings_state = SettingsState::new(&app.config);
+                }
+                if was_picking {
+                    if is_applied {
+                        app.view = if transition_state.return_to_list {
+                            AppView::TicketList
+                        } else if let AppView::TransitionPicker { issue } = &app.view {
+                            AppView::TicketDetail { issue: issue.clone() }
+                        } else {
+                            AppView::TicketList
+                        };
+                        transition_state = TransitionState::new();
+                    } else if app.error.is_some() {
+                        transition_state.loading = false;
+                    }
+                }
+                if app.error.is_some() {
+                    create_state.loading = false;
+                }
+            }
+            poll_result = tokio::task::spawn_blocking(|| event::poll(std::time::Duration::from_millis(50))) => {
+                if !matches!(poll_result, Ok(Ok(true))) {
+                    continue; // timeout or error — redraw and wait again without blocking
+                }
+                match event::read() {
+                    Ok(Event::Mouse(mouse)) => {
+                        let scroll_lines = 3usize;
+                        match mouse.kind {
+                            MouseEventKind::ScrollUp => {
+                                if matches!(app.view, AppView::TicketList) {
+                                    for _ in 0..scroll_lines { app.move_selection_up(); }
+                                }
+                            }
+                            MouseEventKind::ScrollDown => {
+                                if matches!(app.view, AppView::TicketList) {
+                                    for _ in 0..scroll_lines { app.move_selection_down(); }
+                                }
+                            }
+                            _ => {}
+                        }
+                        continue;
+                    }
+                    Ok(Event::Key(key)) if key.kind == KeyEventKind::Press => {
+                    // Global: ? toggles help; Esc/q closes it
+                    if key.code == KeyCode::Char('?') {
+                        app.show_help = !app.show_help;
+                        continue;
+                    }
+                    if app.show_help {
+                        // Any key closes the help overlay
+                        app.show_help = false;
+                        continue;
+                    }
+
+                    if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
+                        break;
+                    }
+
+                    if key.code == KeyCode::Char('q') {
+                        if matches!(app.view, AppView::TicketList) && !app.active_tab().local_search_active {
+                            break;
+                        }
+                    }
+
+                    app.status_msg = None;
+                    if key.code != KeyCode::Char('q') {
+                        app.error = None;
+                    }
+
+                    match app.view.clone() {
+                        AppView::TicketList => {
+                            if detail_state.branch_editing {
+                                ticket_detail::handle_branch_editor_key(&mut app, &mut detail_state, key);
+                            } else if key.code == KeyCode::Char('s') && !app.active_tab().local_search_active {
+                                settings_state = SettingsState::new(&app.config);
+                                app.view = AppView::Settings;
+                            } else if key.code == KeyCode::Char('t') && !app.active_tab().local_search_active {
+                                if let Some(issue) = app.selected_issue().cloned() {
+                                    let key_str = issue.key.clone();
+                                    if let Some(cached) = crate::mcp::storage::load_transition_cache(&key_str) {
+                                        app.available_transitions = cached;
+                                    } else {
+                                        app.available_transitions.clear();
+                                    }
+                                    transition_state = TransitionState::new();
+                                    transition_state.return_to_list = true;
+                                    app.view = AppView::TransitionPicker { issue: Box::new(issue) };
+                                    let client = app.client.clone();
+                                    let tx = app.event_tx.clone();
+                                    tokio::spawn(async move {
+                                        match client.get_transitions(&key_str).await {
+                                            Ok(t) => { let _ = tx.send(AppEvent::TransitionsLoaded(t, key_str)).await; }
+                                            Err(e) => { let _ = tx.send(AppEvent::Error(format!("{e:#}"))).await; }
+                                        }
+                                    });
+                                }
+                            } else if key.code == KeyCode::Char(' ') && !app.active_tab().local_search_active {
+                                if let Some(issue) = app.selected_issue().cloned() {
+                                    if let Some(branch) = find_branch_for_ticket(&issue.key) {
+                                        app.spawn_checkout(branch, &issue);
+                                    } else {
+                                        let suggested = branch_name(&issue.key, issue.summary());
+                                        let mut ta = tui_textarea::TextArea::from([suggested.as_str()]);
+                                        ta.move_cursor(tui_textarea::CursorMove::End);
+                                        detail_state.branch_input = ta;
+                                        detail_state.checkout_issue = Some(issue);
+                                        detail_state.branch_editing = true;
+                                        // stay on TicketList — popup renders over it
+                                    }
+                                }
+                            } else if key.code == KeyCode::Char('a') && !app.active_tab().local_search_active {
+                                if let Some(issue) = app.selected_issue().cloned() {
+                                    app.toggle_assignment(&issue);
+                                }
+                            } else if key.code == KeyCode::Char('o') && !app.active_tab().local_search_active {
+                                if let Some(issue) = app.selected_issue() {
+                                    let url = format!("{}/browse/{}", app.config.jira.base_url, issue.key);
+                                    let _ = std::process::Command::new("xdg-open").arg(&url).spawn();
+                                }
+                            } else if key.code == KeyCode::Char('p') && !app.active_tab().local_search_active {
+                                if let Some(issue) = app.selected_issue() {
+                                    let key_str = issue.key.clone();
+                                    match find_branch_for_ticket(&key_str) {
+                                        None => app.error = Some(format!("No local branch found for {key_str}")),
+                                        Some(branch) => match new_pr_url(&branch) {
+                                            None => app.error = Some("Could not build PR URL — unknown remote or no origin".to_string()),
+                                            Some(url) => { let _ = std::process::Command::new("xdg-open").arg(&url).spawn(); }
+                                        },
+                                    }
+                                }
+                            } else if key.code == KeyCode::Char('f') && !app.active_tab().local_search_active {
+                                filter_panel_state = FilterPanelState::new(&app.filter);
+                                app.view = AppView::FilterPanel;
+                                // Fetch statuses + components in background
+                                let client = app.client.clone();
+                                let project = app
+                                    .filter
+                                    .project
+                                    .clone()
+                                    .or_else(|| app.config.defaults.project.clone());
+                                let tx = app.event_tx.clone();
+                                tokio::spawn(async move {
+                                    let statuses =
+                                        client.get_statuses().await.unwrap_or_default();
+                                    let components = if let Some(p) = project {
+                                        client
+                                            .get_project_components(&p)
+                                            .await
+                                            .map(|cs| cs.into_iter().map(|c| c.name).collect())
+                                            .unwrap_or_default()
+                                    } else {
+                                        vec![]
+                                    };
+                                    let _ = tx
+                                        .send(AppEvent::FilterOptions { statuses, components })
+                                        .await;
+                                });
+                            } else {
+                                ticket_list::handle_key(&mut app, key);
+                            }
+                        }
+                        AppView::TicketDetail { .. } => {
+                            if key.code == KeyCode::Char('t') && !detail_state.branch_editing {
+                                if let AppView::TicketDetail { issue } = &app.view {
+                                    let issue = issue.clone();
+                                    let key_str = issue.key.clone();
+                                    // Pre-populate from cache so the list is instant
+                                    if let Some(cached) = crate::mcp::storage::load_transition_cache(&key_str) {
+                                        app.available_transitions = cached;
+                                    } else {
+                                        app.available_transitions.clear();
+                                    }
+                                    transition_state = TransitionState::new();
+                                    app.view = AppView::TransitionPicker { issue };
+                                    let client = app.client.clone();
+                                    let tx = app.event_tx.clone();
+                                    tokio::spawn(async move {
+                                        match client.get_transitions(&key_str).await {
+                                            Ok(t) => {
+                                                let _ = tx
+                                                    .send(AppEvent::TransitionsLoaded(t, key_str))
+                                                    .await;
+                                            }
+                                            Err(e) => {
+                                                let _ = tx
+                                                    .send(AppEvent::Error(format!("{e:#}")))
+                                                    .await;
+                                            }
+                                        }
+                                    });
+                                }
+                            } else {
+                                ticket_detail::handle_key(&mut app, &mut detail_state, key);
+                            }
+                        }
+                        AppView::TransitionPicker { .. } => {
+                            transition_picker::handle_key(&mut app, &mut transition_state, key);
+                        }
+                        AppView::CreateTicket => {
+                            create_ticket::handle_key(&mut app, &mut create_state, key)
+                        }
+                        AppView::Settings => {
+                            let open_in_nvim = |path: std::path::PathBuf| {
+                                disable_raw_mode().ok();
+                                execute!(std::io::stdout(), LeaveAlternateScreen, DisableMouseCapture).ok();
+                                let _ = std::process::Command::new("nvim").arg(&path).status();
+                                enable_raw_mode().ok();
+                                execute!(std::io::stdout(), EnterAlternateScreen, EnableMouseCapture).ok();
+                            };
+                            if key.code == KeyCode::Char('o') && key.modifiers.contains(KeyModifiers::CONTROL) {
+                                open_in_nvim(config_dir().join("config.yaml"));
+                                terminal.clear().ok();
+                            } else if key.code == KeyCode::Char('t') && key.modifiers.contains(KeyModifiers::CONTROL) {
+                                open_in_nvim(config_dir().join("templates.yaml"));
+                                terminal.clear().ok();
+                            } else {
+                                settings::handle_key(&mut app, &mut settings_state, key);
+                            }
+                        }
+                        AppView::FilterPanel => {
+                            match filter_panel::handle_key(&mut app, &mut filter_panel_state, key) {
+                                Some(FilterPanelResult::Apply(filter)) => {
+                                    app.filter = filter;
+                                    app.view = AppView::TicketList;
+                                    app.trigger_load_tab(Tab::All);
+                                    app.trigger_load_tab(Tab::Mine);
+                                }
+                                Some(FilterPanelResult::Save(filter)) => {
+                                    app.filter = filter.clone();
+                                    app.view = AppView::TicketList;
+
+                                    let mut new_cfg = (*app.config).clone();
+                                    new_cfg.defaults.assigned_to_me = filter.assigned_to_me;
+                                    new_cfg.defaults.hide_done = filter.hide_done;
+                                    new_cfg.defaults.default_filter = DefaultFilter {
+                                        statuses: filter.selected_statuses.clone(),
+                                        component: filter.component.clone(),
+                                        labels: filter.labels.clone(),
+                                        team: filter.team.clone(),
+                                        sprint_active_only: filter.sprint_active_only,
+                                        sort_by: filter.sort_by.as_str().to_string(),
+                                        sort_dir: filter.sort_dir.as_str().to_string(),
+                                    };
+                                    let tx = app.event_tx.clone();
+                                    tokio::spawn(async move {
+                                        match save_settings(&new_cfg.defaults) {
+                                            Ok(()) => {
+                                                let _ =
+                                                    tx.send(AppEvent::FilterSaved(new_cfg)).await;
+                                            }
+                                            Err(e) => {
+                                                let _ = tx
+                                                    .send(AppEvent::Error(format!("{e:#}")))
+                                                    .await;
+                                            }
+                                        }
+                                    });
+
+                                    app.trigger_load_tab(Tab::All);
+                                    app.trigger_load_tab(Tab::Mine);
+                                }
+                                Some(FilterPanelResult::Cancel) => {
+                                    app.view = AppView::TicketList;
+                                }
+                                None => {}
+                            }
+                        }
+                    }
+                    } // end key event
+                    _ => {}
+                } // end match event::read()
+            }
+        }
+    }
+
+    disable_raw_mode()?;
+    execute!(terminal.backend_mut(), LeaveAlternateScreen, DisableMouseCapture)?;
+    Ok(())
+}
