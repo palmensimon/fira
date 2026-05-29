@@ -1,6 +1,6 @@
 # jura
 
-Terminal Jira client with git and Claude Code integration.
+Terminal Jira client with git and AI integration.
 
 ## Installation
 
