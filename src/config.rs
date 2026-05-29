@@ -98,7 +98,7 @@ pub struct SettingsFile {
 pub fn config_dir() -> PathBuf {
     dirs::config_dir()
         .unwrap_or_else(|| PathBuf::from("."))
-        .join("fira")
+        .join("jura")
 }
 
 pub fn settings_path() -> PathBuf {

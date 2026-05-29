@@ -184,7 +184,7 @@ fn draw_header(app: &App, frame: &mut Frame, area: Rect) {
     let project = app.filter.project.as_deref().unwrap_or("all projects");
 
     let mut title_spans: Vec<Span> = vec![
-        Span::styled(" fira ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+        Span::styled(" jura ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
         Span::raw("│ "),
         Span::styled(project, Style::default().fg(Color::Yellow)),
         Span::raw("  "),

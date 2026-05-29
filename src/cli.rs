@@ -49,7 +49,7 @@ pub fn cmd_tickets() {
     let cache = load_mine_cache()
         .filter(|c| !c.issues.is_empty())
         .unwrap_or_else(|| {
-            error_exit("No tickets cached. Open fira TUI to load your assigned tickets.")
+            error_exit("No tickets cached. Open jura TUI to load your assigned tickets.")
         });
 
     let summaries: Vec<TicketSummary> = cache.issues.iter().map(|i| TicketSummary {
@@ -69,7 +69,7 @@ pub fn cmd_ticket(key: &str) {
 
     let issue = find_in_cache(&key).unwrap_or_else(|| {
         error_exit(&format!(
-            "Ticket '{key}' not found in local cache. Open fira TUI and load your tickets first."
+            "Ticket '{key}' not found in local cache. Open jura TUI and load your tickets first."
         ))
     });
 

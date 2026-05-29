@@ -1,10 +1,10 @@
 [package]
-name = "fira"
+name = "jura"
 version = "0.1.0"
 edition = "2024"
 
 [[bin]]
-name = "fira"
+name = "jura"
 path = "src/main.rs"
 
 [dependencies]

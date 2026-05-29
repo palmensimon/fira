@@ -9,7 +9,7 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
-#[command(name = "fira", about = "Jira terminal client with git and Claude integration")]
+#[command(name = "jura", about = "Jira terminal client with git and Claude integration")]
 struct Cli {
     #[command(subcommand)]
     command: Option<Command>,
@@ -17,7 +17,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Write example config files to ~/.config/fira/
+    /// Write example config files to ~/.config/jura/
     Init,
     /// List all Jira tickets assigned to me (from local cache)
     Tickets,
@@ -34,7 +34,7 @@ async fn main() -> Result<()> {
     match cli.command {
         Some(Command::Init) => {
             config::write_example_config()?;
-            println!("Edit ~/.config/fira/config.yaml with your Jira credentials, then run fira.");
+            println!("Edit ~/.config/jura/config.yaml with your Jira credentials, then run jura.");
         }
         Some(Command::Tickets) => {
             cli::cmd_tickets();
@@ -47,7 +47,7 @@ async fn main() -> Result<()> {
                 Ok(c) => c,
                 Err(e) => {
                     eprintln!("Config error: {e}");
-                    eprintln!("Run `fira init` to create example config files.");
+                    eprintln!("Run `jura init` to create example config files.");
                     std::process::exit(1);
                 }
             };

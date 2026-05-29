@@ -1,4 +1,4 @@
-# fira
+# jura
 
 Terminal Jira client with git and Claude Code integration.
 
@@ -7,29 +7,29 @@ Terminal Jira client with git and Claude Code integration.
 Requires a Rust toolchain ([rustup.rs](https://rustup.rs)).
 
 ```sh
-cargo install --git https://github.com/palmensimon/fira.git
+cargo install --git https://github.com/palmensimon/jura.git
 ```
 
 ## Configuration
 
 ```sh
-fira init
+jura init
 ```
 
 Edit the generated `config.yaml` with your Jira credentials (`base_url`, `token`). Config is stored in the platform default location:
 
-- **Linux:** `~/.config/fira/`
-- **macOS:** `~/Library/Application Support/fira/`
-- **Windows:** `%APPDATA%\fira\`
+- **Linux:** `~/.config/jura/`
+- **macOS:** `~/Library/Application Support/jura/`
+- **Windows:** `%APPDATA%\jura\`
 
 ## Usage
 
 | Command | Description |
 |---|---|
-| `fira` | Open the TUI |
-| `fira tickets` | List assigned tickets (JSON, reads local cache) |
-| `fira ticket <KEY>` | Full details for a ticket |
-| `fira init` | Write example config files |
+| `jura` | Open the TUI |
+| `jura tickets` | List assigned tickets (JSON, reads local cache) |
+| `jura ticket <KEY>` | Full details for a ticket |
+| `jura init` | Write example config files |
 
 The local cache is populated when you open the Mine tab in the TUI.
 
