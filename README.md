@@ -16,11 +16,19 @@ cargo install --git https://github.com/palmensimon/jura.git
 jura init
 ```
 
-Edit the generated `config.yaml` with your Jira credentials (`base_url`, `token`). Config is stored in the platform default location:
+Config is stored in the platform default location:
 
 - **Linux:** `~/.config/jura/`
 - **macOS:** `~/Library/Application Support/jura/`
 - **Windows:** `%APPDATA%\jura\`
+
+Two files are generated:
+
+| File | Purpose | Edit via |
+|---|---|---|
+| `config.yaml` | Jira credentials (`base_url`, `token`) | TUI `s` → Settings, or directly |
+| `user_defaults.yaml` | Preferences (`project`, filters, behaviour) | TUI `s` → Settings or `Ctrl+O`, or directly |
+| `templates.yaml` | Create-ticket templates | TUI `s` → `Ctrl+T`, or directly |
 
 ## Usage
 
