@@ -129,6 +129,7 @@ pub enum AppView {
     TicketList,
     TicketDetail { issue: Box<Issue> },
     TransitionPicker { issue: Box<Issue> },
+    TemplatesPanel,
     CreateTicket,
     Settings,
     FilterPanel,
@@ -240,11 +241,17 @@ impl FilterState {
             config.defaults.status_filter.iter().cloned().collect()
         };
 
+        let hidden_statuses = if !df.hidden_statuses.is_empty() {
+            df.hidden_statuses.clone()
+        } else {
+            config.defaults.hidden_statuses.clone()
+        };
+
         Self {
             project: config.defaults.project.clone(),
             component: df.component.clone(),
             selected_statuses,
-            hidden_statuses: config.defaults.hidden_statuses.clone(),
+            hidden_statuses,
             text_search: String::new(),
             labels: df.labels.clone(),
             team: df.team.clone(),
@@ -294,6 +301,7 @@ pub struct App {
     pub available_components: Vec<String>,
     pub available_transitions: Vec<Transition>,
     pub show_help: bool,
+    pub help_scroll: u16,
 }
 
 impl App {
@@ -327,6 +335,7 @@ impl App {
             available_components: vec![],
             available_transitions: vec![],
             show_help: false,
+            help_scroll: 0,
         }
     }
 

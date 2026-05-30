@@ -4,7 +4,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, List, ListItem, ListState, Paragraph},
+    widgets::{Block, Borders, Paragraph},
 };
 use tui_textarea::TextArea;
 
@@ -16,15 +16,7 @@ use crate::{
     tui::app::{App, AppEvent, AppView},
 };
 
-#[derive(Debug, Default, Clone, Copy, PartialEq)]
-pub enum CreateStep {
-    #[default]
-    PickTemplate,
-    FillForm,
-}
-
 pub struct CreateState {
-    pub step: CreateStep,
     pub template_idx: usize,
     pub summary_input: TextArea<'static>,
     pub description_input: TextArea<'static>,
@@ -53,7 +45,6 @@ impl CreateState {
         );
 
         Self {
-            step: CreateStep::PickTemplate,
             template_idx: 0,
             summary_input: summary,
             description_input: description,
@@ -64,40 +55,11 @@ impl CreateState {
 }
 
 pub fn handle_key(app: &mut App, state: &mut CreateState, key: KeyEvent) {
-    match state.step {
-        CreateStep::PickTemplate => handle_pick_template(app, state, key),
-        CreateStep::FillForm => handle_fill_form(app, state, key),
-    }
-}
-
-fn handle_pick_template(app: &mut App, state: &mut CreateState, key: KeyEvent) {
-    match key.code {
-        KeyCode::Esc => {
-            app.view = AppView::TicketList;
-        }
-        KeyCode::Up | KeyCode::Char('k') => {
-            if state.template_idx > 0 {
-                state.template_idx -= 1;
-            }
-        }
-        KeyCode::Down | KeyCode::Char('j') => {
-            if state.template_idx + 1 < app.templates.len() {
-                state.template_idx += 1;
-            }
-        }
-        KeyCode::Enter => {
-            state.step = CreateStep::FillForm;
-        }
-        _ => {}
-    }
-}
-
-fn handle_fill_form(app: &mut App, state: &mut CreateState, key: KeyEvent) {
     if state.loading {
         return;
     }
     if key.code == KeyCode::Esc {
-        state.step = CreateStep::PickTemplate;
+        app.view = AppView::TemplatesPanel;
         return;
     }
 
@@ -196,52 +158,6 @@ fn submit_ticket(app: &mut App, state: &mut CreateState) {
 }
 
 pub fn draw(app: &App, state: &mut CreateState, frame: &mut Frame, area: Rect) {
-    match state.step {
-        CreateStep::PickTemplate => draw_template_picker(app, state, frame, area),
-        CreateStep::FillForm => draw_form(app, state, frame, area),
-    }
-}
-
-fn draw_template_picker(app: &App, state: &CreateState, frame: &mut Frame, area: Rect) {
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Length(3), Constraint::Min(0), Constraint::Length(2)])
-        .split(area);
-
-    let header = Paragraph::new(Line::from(vec![
-        Span::styled(" Create Ticket", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
-        Span::styled(" — select template", Style::default().fg(Color::DarkGray)),
-    ]))
-    .block(Block::default().borders(Borders::BOTTOM).border_style(Style::default().fg(Color::DarkGray)));
-    frame.render_widget(header, chunks[0]);
-
-    let items: Vec<ListItem> = app
-        .templates
-        .iter()
-        .map(|t| {
-            let line = Line::from(vec![
-                Span::styled(&t.name, Style::default().fg(Color::White)),
-                Span::styled(
-                    format!("  {} / {}", t.project, t.issue_type),
-                    Style::default().fg(Color::DarkGray),
-                ),
-            ]);
-            ListItem::new(line)
-        })
-        .collect();
-
-    let list = List::new(items)
-        .block(Block::default().borders(Borders::NONE))
-        .highlight_style(Style::default().bg(Color::Rgb(40, 40, 60)).add_modifier(Modifier::BOLD))
-        .highlight_symbol("▶ ");
-
-    let mut list_state = ListState::default().with_selected(Some(state.template_idx));
-    frame.render_stateful_widget(list, chunks[1], &mut list_state);
-
-    frame.render_widget(Paragraph::new(""), chunks[2]);
-}
-
-fn draw_form(app: &App, state: &mut CreateState, frame: &mut Frame, area: Rect) {
     let template_name = app
         .templates
         .get(state.template_idx)

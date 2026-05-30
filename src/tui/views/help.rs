@@ -6,89 +6,89 @@ use ratatui::{
     widgets::{Block, Borders, Clear, Paragraph},
 };
 
+use crate::tui::app::AppView;
+
 /// Renders a centred keybindings popup over whatever is currently drawn.
-pub fn draw(frame: &mut Frame, area: Rect) {
+/// `scroll` is the number of lines scrolled from the top; it is clamped internally.
+pub fn draw(frame: &mut Frame, area: Rect, scroll: u16) {
     let popup = centered_rect(58, 90, area);
     frame.render_widget(Clear, popup);
 
-    let outer = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Cyan))
-        .title(" Keybindings  [?] close ");
-    let inner = outer.inner(popup);
-    frame.render_widget(outer, popup);
-
     let sections: &[(&str, &[(&str, &str)])] = &[
+        (
+            "Global",
+            &[
+                ("↑/↓  j/k", "Navigate"),
+                ("Tab / ↑↓", "Navigate fields"),
+                ("1 – 9", "Jump to field"),
+                ("Esc", "Cancel / back"),
+                ("q  Ctrl+C", "Quit"),
+                ("?", "Toggle help"),
+            ],
+        ),
+        (
+            "Ticket actions  (List + Detail)",
+            &[
+                ("t", "Change status"),
+                ("a", "Assign / unassign self"),
+                ("Space", "Checkout / create branch"),
+                ("p", "Open PR/MR in browser"),
+                ("o", "Open ticket in browser"),
+                ("⌫", "Back  (Detail only)"),
+            ],
+        ),
         (
             "Ticket List",
             &[
-                ("↑/↓  j/k", "Navigate"),
                 ("Enter", "Open detail"),
-                ("Space", "Checkout branch (creates if absent; assigns self if configured)"),
-                ("/", "Quick search (local, no API call)"),
-                ("[  ]  Tab", "Switch tab (All / Mine)"),
-                ("t", "Change status"),
-                ("a", "Assign / unassign self"),
-                ("p", "Open new PR/MR in browser"),
-                ("o", "Open ticket in browser"),
+                ("/", "Quick search"),
+                ("[  ]  Tab", "Switch tab"),
                 ("f", "Filter panel"),
                 ("c", "Create ticket"),
                 ("r", "Refresh"),
                 ("s", "Settings"),
-                ("q  Ctrl+C", "Quit"),
             ],
         ),
         (
-            "Ticket Detail",
+            "Filter Panel",
             &[
-                ("t", "Change status (cached, instant on repeat)"),
-                ("a", "Assign / unassign self (toggles)"),
-                ("Space", "Checkout branch (creates if absent; prompts for name if new)"),
-                ("p", "Open new PR/MR in browser (finds local branch by ticket key)"),
-                ("o", "Open ticket in browser (xdg-open)"),
-                ("Esc / Backspace", "Back"),
-            ],
-        ),
-        (
-            "Filter Panel  (popup)",
-            &[
-                ("1 – 8", "Jump to field (from non-text fields)"),
-                ("Tab / ↑↓", "Navigate fields"),
                 ("←/→", "Move between options"),
                 ("Space", "Toggle / cycle"),
                 ("Enter", "Apply filter"),
                 ("Ctrl+S", "Save as default"),
-                ("Esc", "Cancel"),
             ],
         ),
         (
-            "Transition Picker  (popup)",
+            "Transition Picker",
             &[
                 ("type", "Filter transitions"),
-                ("↑/↓", "Navigate results"),
-                ("Enter", "Apply transition"),
-                ("Esc / Backspace", "Back (Backspace also clears search)"),
+                ("Enter", "Apply"),
+                ("⌫", "Back + clear search"),
+            ],
+        ),
+        (
+            "Select Template",
+            &[
+                ("↑/↓  j/k", "Navigate"),
+                ("Enter", "Select"),
+                ("r", "Reload templates"),
+                ("Ctrl+T", "Edit templates.yaml"),
             ],
         ),
         (
             "Settings",
             &[
-                ("1 – 9", "Jump to field (from toggle fields)"),
-                ("Tab / ↑↓", "Navigate fields"),
-                ("Space", "Toggle boolean fields"),
+                ("Space", "Toggle"),
                 ("Enter", "Save"),
-                ("r", "Reload user_defaults.yaml and templates.yaml from disk"),
-                ("Ctrl+O", "Open user_defaults.yaml in nvim"),
-                ("Ctrl+T", "Open templates.yaml in nvim"),
-                ("Esc", "Cancel"),
+                ("r", "Reload config files"),
+                ("Ctrl+D", "Edit user_defaults.yaml"),
+                ("Ctrl+T", "Edit templates.yaml"),
             ],
         ),
         (
             "Create Ticket",
             &[
-                ("Tab", "Next field"),
                 ("Ctrl+S", "Submit"),
-                ("Esc", "Back"),
             ],
         ),
     ];
@@ -114,7 +114,26 @@ pub fn draw(frame: &mut Frame, area: Rect) {
         lines.push(Line::raw(""));
     }
 
-    frame.render_widget(Paragraph::new(lines), inner);
+    let inner_height = popup.height.saturating_sub(2);
+    let total = lines.len() as u16;
+    let max_scroll = total.saturating_sub(inner_height);
+    let effective_scroll = scroll.min(max_scroll);
+
+    let needs_scroll = total > inner_height;
+    let title = if needs_scroll {
+        " Keybindings  [?] close  ↑↓ scroll "
+    } else {
+        " Keybindings  [?] close "
+    };
+
+    let outer = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Cyan))
+        .title(title);
+    let inner = outer.inner(popup);
+    frame.render_widget(outer, popup);
+
+    frame.render_widget(Paragraph::new(lines).scroll((effective_scroll, 0)), inner);
 }
 
 /// Renders the global bottom status bar (1 line) in the classic `[key] action` style.
@@ -170,68 +189,50 @@ fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
 }
 
 /// Returns the context-appropriate hints for the bottom status bar.
-pub fn status_bar_hints(view_name: &str) -> &'static [(&'static str, &'static str)] {
-    match view_name {
-        "TicketList" => &[
+pub fn status_bar_hints(view: &AppView) -> &'static [(&'static str, &'static str)] {
+    match view {
+        AppView::TicketList => &[
             ("Space", "checkout"),
-            ("t", "status"),
-            ("a", "assign"),
-            ("p", "PR/MR"),
-            ("o", "browser"),
             ("/", "search"),
             ("f", "filter"),
             ("c", "create"),
             ("r", "refresh"),
             ("?", "help"),
         ],
-        "TicketDetail" => &[
+        AppView::TicketDetail { .. } => &[
             ("t", "status"),
             ("a", "assign self"),
             ("Space", "checkout"),
-            ("p", "open PR/MR"),
-            ("o", "browser"),
-            ("Esc", "back"),
+            ("o", "open PR"),
+            ("b", "open in browser"),
             ("?", "help"),
         ],
-        "TransitionPicker" => &[
+        AppView::TransitionPicker { .. } => &[
             ("type", "filter"),
-            ("↑↓", "navigate"),
             ("Enter", "apply"),
-            ("Esc / ⌫", "back"),
+            ("?", "help"),
         ],
-        "FilterPanel" => &[
-            ("Tab/↑↓", "navigate"),
+        AppView::FilterPanel => &[
             ("Space", "toggle"),
             ("Enter", "apply"),
+            ("Ctrl+S", "save defaults"),
+            ("?", "help"),
+        ],
+        AppView::Settings => &[
             ("Ctrl+S", "save"),
-            ("Esc", "cancel"),
+            ("Ctrl+D", "edit defaults"),
+            ("Ctrl+T", "edit templates"),
+            ("?", "help"),
         ],
-        "Settings" => &[
-            ("Tab/↑↓", "navigate"),
-            ("Enter", "save"),
-            ("r", "reload config files"),
-            ("Ctrl+O", "edit user_defaults.yaml"),
+        AppView::TemplatesPanel => &[
+            ("r", "reload templates"),
             ("Ctrl+T", "edit templates.yaml"),
-            ("Esc", "cancel"),
+            ("?", "help"),
         ],
-        "CreateTicket" => &[
-            ("Tab", "next field"),
+        AppView::CreateTicket => &[
             ("Ctrl+S", "submit"),
-            ("Esc", "back"),
+            ("?", "help"),
         ],
-        _ => &[("?", "help"), ("Esc", "back")],
-    }
-}
-
-/// Derive a simple string name for the current view (used by status_bar_hints).
-pub fn view_name(view: &crate::tui::app::AppView) -> &'static str {
-    match view {
-        crate::tui::app::AppView::TicketList => "TicketList",
-        crate::tui::app::AppView::TicketDetail { .. } => "TicketDetail",
-        crate::tui::app::AppView::TransitionPicker { .. } => "TransitionPicker",
-        crate::tui::app::AppView::CreateTicket => "CreateTicket",
-        crate::tui::app::AppView::Settings => "Settings",
-        crate::tui::app::AppView::FilterPanel => "FilterPanel",
     }
 }
 

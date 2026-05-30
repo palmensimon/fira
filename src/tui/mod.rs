@@ -23,6 +23,7 @@ use views::{
     filter_panel::{self, FilterPanelResult, FilterPanelState},
     help,
     settings::{self, SettingsState},
+    templates_panel::{self, TemplatesPanelResult, TemplatesPanelState},
     ticket_detail::{self, DetailState},
     ticket_list,
     transition_picker::{self, TransitionState},
@@ -46,6 +47,7 @@ pub async fn run_tui(config: Config, templates: Templates, client: JiraClient) -
     let mut create_state = CreateState::new();
     let mut settings_state = SettingsState::new(&app.config);
     let mut filter_panel_state = FilterPanelState::new(&app.filter);
+    let mut templates_panel_state = TemplatesPanelState::new();
     let mut transition_state = TransitionState::new();
     let mut detail_state = DetailState::new();
 
@@ -87,6 +89,10 @@ pub async fn run_tui(config: Config, templates: Templates, client: JiraClient) -
                     ticket_list::draw(&mut app, frame, content_area);
                     filter_panel::draw(&app, &mut filter_panel_state, frame, content_area);
                 }
+                AppView::TemplatesPanel => {
+                    ticket_list::draw(&mut app, frame, content_area);
+                    templates_panel::draw(&app, &templates_panel_state, frame, content_area);
+                }
                 AppView::TransitionPicker { .. } => {
                     let from_list = transition_state.return_to_list;
                     if from_list {
@@ -99,7 +105,6 @@ pub async fn run_tui(config: Config, templates: Templates, client: JiraClient) -
             }
 
             // Global bottom status bar
-            let vname = help::view_name(&app.view);
             if matches!(app.view, AppView::TicketList) && detail_state.branch_editing {
                 ticket_detail::draw_bar(&app, &detail_state, frame, bar_area);
             } else if matches!(app.view, AppView::TicketList) {
@@ -107,12 +112,12 @@ pub async fn run_tui(config: Config, templates: Templates, client: JiraClient) -
             } else if matches!(app.view, AppView::TicketDetail { .. }) {
                 ticket_detail::draw_bar(&app, &detail_state, frame, bar_area);
             } else {
-                help::draw_status_bar(frame, bar_area, help::status_bar_hints(vname), app.all.loading || app.mine.loading, app.status_msg.as_deref());
+                help::draw_status_bar(frame, bar_area, help::status_bar_hints(&app.view), app.all.loading || app.mine.loading, app.status_msg.as_deref());
             }
 
             // Help popup (drawn last so it's on top)
             if app.show_help {
-                help::draw(frame, full_area);
+                help::draw(frame, full_area, app.help_scroll);
             }
         })?;
 
@@ -166,14 +171,28 @@ pub async fn run_tui(config: Config, templates: Templates, client: JiraClient) -
                         continue;
                     }
                     Ok(Event::Key(key)) if key.kind == KeyEventKind::Press => {
-                    // Global: ? toggles help; Esc/q closes it
+                    // Global: ? toggles help
                     if key.code == KeyCode::Char('?') {
                         app.show_help = !app.show_help;
+                        if app.show_help { app.help_scroll = 0; }
                         continue;
                     }
                     if app.show_help {
-                        // Any key closes the help overlay
-                        app.show_help = false;
+                        match key.code {
+                            KeyCode::Up | KeyCode::Char('k') => {
+                                app.help_scroll = app.help_scroll.saturating_sub(1);
+                            }
+                            KeyCode::Down | KeyCode::Char('j') => {
+                                app.help_scroll = app.help_scroll.saturating_add(1);
+                            }
+                            KeyCode::PageUp => {
+                                app.help_scroll = app.help_scroll.saturating_sub(10);
+                            }
+                            KeyCode::PageDown => {
+                                app.help_scroll = app.help_scroll.saturating_add(10);
+                            }
+                            _ => { app.show_help = false; }
+                        }
                         continue;
                     }
 
@@ -191,6 +210,14 @@ pub async fn run_tui(config: Config, templates: Templates, client: JiraClient) -
                     if key.code != KeyCode::Char('q') {
                         app.error = None;
                     }
+
+                    let open_in_nvim = |path: std::path::PathBuf| {
+                        disable_raw_mode().ok();
+                        execute!(std::io::stdout(), LeaveAlternateScreen, DisableMouseCapture).ok();
+                        let _ = std::process::Command::new("nvim").arg(&path).status();
+                        enable_raw_mode().ok();
+                        execute!(std::io::stdout(), EnterAlternateScreen, EnableMouseCapture).ok();
+                    };
 
                     match app.view.clone() {
                         AppView::TicketList => {
@@ -237,12 +264,12 @@ pub async fn run_tui(config: Config, templates: Templates, client: JiraClient) -
                                 if let Some(issue) = app.selected_issue().cloned() {
                                     app.toggle_assignment(&issue);
                                 }
-                            } else if key.code == KeyCode::Char('o') && !app.active_tab().local_search_active {
+                            } else if key.code == KeyCode::Char('b') && !app.active_tab().local_search_active {
                                 if let Some(issue) = app.selected_issue() {
                                     let url = format!("{}/browse/{}", app.config.jira.base_url, issue.key);
                                     let _ = std::process::Command::new("xdg-open").arg(&url).spawn();
                                 }
-                            } else if key.code == KeyCode::Char('p') && !app.active_tab().local_search_active {
+                            } else if key.code == KeyCode::Char('o') && !app.active_tab().local_search_active {
                                 if let Some(issue) = app.selected_issue() {
                                     let key_str = issue.key.clone();
                                     match find_branch_for_ticket(&key_str) {
@@ -253,6 +280,9 @@ pub async fn run_tui(config: Config, templates: Templates, client: JiraClient) -
                                         },
                                     }
                                 }
+                            } else if key.code == KeyCode::Char('c') && !app.active_tab().local_search_active {
+                                templates_panel_state = TemplatesPanelState::new();
+                                app.view = AppView::TemplatesPanel;
                             } else if key.code == KeyCode::Char('f') && !app.active_tab().local_search_active {
                                 filter_panel_state = FilterPanelState::new(&app.filter);
                                 app.view = AppView::FilterPanel;
@@ -325,14 +355,7 @@ pub async fn run_tui(config: Config, templates: Templates, client: JiraClient) -
                             create_ticket::handle_key(&mut app, &mut create_state, key)
                         }
                         AppView::Settings => {
-                            let open_in_nvim = |path: std::path::PathBuf| {
-                                disable_raw_mode().ok();
-                                execute!(std::io::stdout(), LeaveAlternateScreen, DisableMouseCapture).ok();
-                                let _ = std::process::Command::new("nvim").arg(&path).status();
-                                enable_raw_mode().ok();
-                                execute!(std::io::stdout(), EnterAlternateScreen, EnableMouseCapture).ok();
-                            };
-                            if key.code == KeyCode::Char('o') && key.modifiers.contains(KeyModifiers::CONTROL) {
+                            if key.code == KeyCode::Char('d') && key.modifiers.contains(KeyModifiers::CONTROL) {
                                 open_in_nvim(config_dir().join("user_defaults.yaml"));
                                 terminal.clear().ok();
                             } else if key.code == KeyCode::Char('t') && key.modifiers.contains(KeyModifiers::CONTROL) {
@@ -365,6 +388,34 @@ pub async fn run_tui(config: Config, templates: Templates, client: JiraClient) -
                                 settings::handle_key(&mut app, &mut settings_state, key);
                             }
                         }
+                        AppView::TemplatesPanel => {
+                            if key.code == KeyCode::Char('r') {
+                                match crate::config::load_templates() {
+                                    Ok(t) => {
+                                        app.templates = t.templates;
+                                        templates_panel_state.selected_idx = 0;
+                                        app.status_msg = Some("Templates reloaded".to_string());
+                                    }
+                                    Err(e) => app.error = Some(format!("Template reload failed: {e:#}")),
+                                }
+                            } else if key.code == KeyCode::Char('t') && key.modifiers.contains(KeyModifiers::CONTROL) {
+                                open_in_nvim(config_dir().join("templates.yaml"));
+                                terminal.clear().ok();
+                            } else {
+                                let len = app.templates.len();
+                                match templates_panel::handle_key(&mut templates_panel_state, len, key) {
+                                    Some(TemplatesPanelResult::Selected(idx)) => {
+                                        create_state = CreateState::new();
+                                        create_state.template_idx = idx;
+                                        app.view = AppView::CreateTicket;
+                                    }
+                                    Some(TemplatesPanelResult::Cancel) => {
+                                        app.view = AppView::TicketList;
+                                    }
+                                    None => {}
+                                }
+                            }
+                        }
                         AppView::FilterPanel => {
                             match filter_panel::handle_key(&mut app, &mut filter_panel_state, key) {
                                 Some(FilterPanelResult::Apply(filter)) => {
@@ -380,6 +431,7 @@ pub async fn run_tui(config: Config, templates: Templates, client: JiraClient) -
                                     let mut new_cfg = (*app.config).clone();
                                     new_cfg.defaults.default_filter = DefaultFilter {
                                         statuses: filter.selected_statuses.clone(),
+                                        hidden_statuses: filter.hidden_statuses.clone(),
                                         component: filter.component.clone(),
                                         labels: filter.labels.clone(),
                                         team: filter.team.clone(),

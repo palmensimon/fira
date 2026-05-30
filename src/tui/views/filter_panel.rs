@@ -29,6 +29,22 @@ pub enum ActiveRow {
 
 const ROW_COUNT: usize = 10;
 
+// Visual row heights in order: text_search, status, hidden_status, component, labels, team,
+// assigned_to_me, sprint_active, sort. SortBy and SortDir (logical rows 8+9) share visual row 8.
+const ROW_HEIGHTS: [u16; 9] = [3, 5, 5, 5, 5, 5, 3, 3, 3];
+
+fn visible_row_range(start: usize, available: u16) -> std::ops::Range<usize> {
+    let mut h = 0u16;
+    let mut end = start;
+    while end < ROW_HEIGHTS.len() {
+        let next = h + ROW_HEIGHTS[end];
+        if next > available { break; }
+        h = next;
+        end += 1;
+    }
+    start..end
+}
+
 impl ActiveRow {
     fn index(self) -> usize {
         match self {
@@ -81,6 +97,7 @@ pub struct FilterPanelState {
     pub selected_team: Option<String>,
     pub active_row: ActiveRow,
     pub text_editing: bool,
+    pub scroll_start: usize,
 }
 
 impl FilterPanelState {
@@ -110,6 +127,7 @@ impl FilterPanelState {
             selected_team: filter.team.clone(),
             active_row: ActiveRow::TextSearch,
             text_editing: false,
+            scroll_start: 0,
         }
     }
 
@@ -146,6 +164,18 @@ impl FilterPanelState {
     fn prev_row(&mut self) {
         self.text_editing = false;
         self.active_row = ActiveRow::from_index(self.active_row.index() + ROW_COUNT - 1);
+    }
+
+    pub fn update_scroll(&mut self, available: u16) {
+        let active = self.active_row.index().min(8);
+        if self.scroll_start > active {
+            self.scroll_start = active;
+        }
+        for _ in 0..9 {
+            let vis = visible_row_range(self.scroll_start, available);
+            if vis.contains(&active) || vis.is_empty() { break; }
+            self.scroll_start += 1;
+        }
     }
 }
 
@@ -403,183 +433,225 @@ fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
 }
 
 pub fn draw(app: &App, state: &mut FilterPanelState, frame: &mut Frame, area: Rect) {
-    // Render as a centered popup over whatever is behind it
     let popup = centered_rect(70, 92, area);
-
-    // Clear the popup area first so content behind doesn't bleed through
     frame.render_widget(Clear, popup);
+
+    // popup height - 2 borders - 1 footer = lines available for rows
+    let available = popup.height.saturating_sub(3);
+    state.update_scroll(available);
+
+    let visible = visible_row_range(state.scroll_start, available);
+    let has_above = state.scroll_start > 0;
+    let has_below = visible.end < ROW_HEIGHTS.len();
+    let scroll_hint = match (has_above, has_below) {
+        (true, true) => "  ▲▼ ",
+        (true, false) => "  ▲ ",
+        (false, true) => "  ▼ ",
+        (false, false) => "",
+    };
 
     let outer = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::Cyan))
-        .title(" Filter ");
+        .title(format!(" Filter{scroll_hint}"));
     let inner = outer.inner(popup);
     frame.render_widget(outer, popup);
 
+    // Build constraints for only the visible rows, plus padding and footer
+    let mut constraints: Vec<Constraint> = visible.clone()
+        .map(|i| Constraint::Length(ROW_HEIGHTS[i]))
+        .collect();
+    constraints.push(Constraint::Min(0));
+    constraints.push(Constraint::Length(1));
+
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(3), // text search
-            Constraint::Length(5), // status
-            Constraint::Length(5), // hidden statuses
-            Constraint::Length(5), // component
-            Constraint::Length(5), // labels
-            Constraint::Length(5), // team
-            Constraint::Length(3), // assigned_to_me
-            Constraint::Length(3), // sprint_active
-            Constraint::Length(3), // sort
-            Constraint::Min(0),    // padding
-            Constraint::Length(1), // footer
-        ])
+        .constraints(constraints)
         .split(inner);
 
-    // ── Text search ───────────────────────────────────────────────────────────
-    update_textarea_block(
-        &mut state.text_input,
-        " [1] Text search ",
-        state.active_row == ActiveRow::TextSearch,
-        state.text_editing && state.active_row == ActiveRow::TextSearch,
-    );
-    frame.render_widget(&state.text_input, chunks[0]);
+    let footer_chunk = *chunks.last().unwrap();
 
-    // ── Status multi-select ───────────────────────────────────────────────────
-    if !app.available_statuses.is_empty() && state.status_cursor >= app.available_statuses.len() {
-        state.status_cursor = app.available_statuses.len() - 1;
+    for (ci, ri) in visible.enumerate() {
+        let chunk = chunks[ci];
+        match ri {
+            // ── Text search ───────────────────────────────────────────────────
+            0 => {
+                update_textarea_block(
+                    &mut state.text_input,
+                    " [1] Text search ",
+                    state.active_row == ActiveRow::TextSearch,
+                    state.text_editing && state.active_row == ActiveRow::TextSearch,
+                );
+                frame.render_widget(&state.text_input, chunk);
+            }
+            // ── Status multi-select ───────────────────────────────────────────
+            1 => {
+                if !app.available_statuses.is_empty()
+                    && state.status_cursor >= app.available_statuses.len()
+                {
+                    state.status_cursor = app.available_statuses.len() - 1;
+                }
+                frame.render_widget(
+                    Paragraph::new(option_list_text(
+                        &app.available_statuses,
+                        &state.selected_statuses,
+                        state.status_cursor,
+                        state.active_row == ActiveRow::Status,
+                        false,
+                    ))
+                    .block(focused_block(" [2] Status ", state.active_row == ActiveRow::Status))
+                    .wrap(Wrap { trim: false }),
+                    chunk,
+                );
+            }
+            // ── Hidden statuses multi-select ──────────────────────────────────
+            2 => {
+                if !app.hidden_status_options.is_empty()
+                    && state.hidden_status_cursor >= app.hidden_status_options.len()
+                {
+                    state.hidden_status_cursor = app.hidden_status_options.len() - 1;
+                }
+                frame.render_widget(
+                    Paragraph::new(option_list_text(
+                        &app.hidden_status_options,
+                        &state.hidden_statuses,
+                        state.hidden_status_cursor,
+                        state.active_row == ActiveRow::HiddenStatus,
+                        false,
+                    ))
+                    .block(focused_block(
+                        " [3] Hidden statuses ",
+                        state.active_row == ActiveRow::HiddenStatus,
+                    ))
+                    .wrap(Wrap { trim: false }),
+                    chunk,
+                );
+            }
+            // ── Component single-select ───────────────────────────────────────
+            3 => {
+                let comp_total = app.available_components.len() + 1;
+                if state.component_cursor >= comp_total {
+                    state.component_cursor = 0;
+                }
+                let comp_options: Vec<String> = std::iter::once("(all)".to_string())
+                    .chain(app.available_components.iter().cloned())
+                    .collect();
+                let comp_selected: Vec<String> = match &state.selected_component {
+                    None => vec!["(all)".to_string()],
+                    Some(c) => vec![c.clone()],
+                };
+                frame.render_widget(
+                    Paragraph::new(option_list_text(
+                        &comp_options,
+                        &comp_selected,
+                        state.component_cursor,
+                        state.active_row == ActiveRow::Component,
+                        true,
+                    ))
+                    .block(focused_block(
+                        " [4] Component ",
+                        state.active_row == ActiveRow::Component,
+                    ))
+                    .wrap(Wrap { trim: false }),
+                    chunk,
+                );
+            }
+            // ── Labels multi-select ───────────────────────────────────────────
+            4 => {
+                let visible_labels = &app.config.defaults.visible_labels;
+                if !visible_labels.is_empty() && state.labels_cursor >= visible_labels.len() {
+                    state.labels_cursor = visible_labels.len() - 1;
+                }
+                frame.render_widget(
+                    Paragraph::new(option_list_text(
+                        visible_labels,
+                        &state.selected_labels,
+                        state.labels_cursor,
+                        state.active_row == ActiveRow::Labels,
+                        false,
+                    ))
+                    .block(focused_block(" [5] Labels ", state.active_row == ActiveRow::Labels))
+                    .wrap(Wrap { trim: false }),
+                    chunk,
+                );
+            }
+            // ── Team single-select ────────────────────────────────────────────
+            5 => {
+                let visible_teams = &app.config.defaults.visible_teams;
+                let team_total = visible_teams.len() + 1;
+                if state.team_cursor >= team_total {
+                    state.team_cursor = 0;
+                }
+                let team_options: Vec<String> = std::iter::once("(all)".to_string())
+                    .chain(visible_teams.iter().map(|t| t.name.clone()))
+                    .collect();
+                let team_selected: Vec<String> = match &state.selected_team {
+                    None => vec!["(all)".to_string()],
+                    Some(id) => visible_teams
+                        .iter()
+                        .find(|t| &t.id == id)
+                        .map(|t| vec![t.name.clone()])
+                        .unwrap_or_default(),
+                };
+                frame.render_widget(
+                    Paragraph::new(option_list_text(
+                        &team_options,
+                        &team_selected,
+                        state.team_cursor,
+                        state.active_row == ActiveRow::Team,
+                        true,
+                    ))
+                    .block(focused_block(" [6] Team ", state.active_row == ActiveRow::Team))
+                    .wrap(Wrap { trim: false }),
+                    chunk,
+                );
+            }
+            // ── Bool toggles ──────────────────────────────────────────────────
+            6 => {
+                draw_toggle(
+                    frame, chunk, "Assigned to me", 7, state.assigned_to_me,
+                    state.active_row == ActiveRow::AssignedToMe,
+                );
+            }
+            7 => {
+                draw_toggle(
+                    frame, chunk, "Sprint active only", 8, state.sprint_active_only,
+                    state.active_row == ActiveRow::SprintActive,
+                );
+            }
+            // ── Sort ──────────────────────────────────────────────────────────
+            8 => {
+                let sort_focused =
+                    matches!(state.active_row, ActiveRow::SortBy | ActiveRow::SortDir);
+                let sort_line = Line::from(vec![
+                    Span::styled(" Sort by: ", Style::default().fg(Color::DarkGray)),
+                    Span::styled(
+                        state.sort_by.label(),
+                        if state.active_row == ActiveRow::SortBy {
+                            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+                        } else {
+                            Style::default().fg(Color::White)
+                        },
+                    ),
+                    Span::styled("   Direction: ", Style::default().fg(Color::DarkGray)),
+                    Span::styled(
+                        state.sort_dir.label(),
+                        if state.active_row == ActiveRow::SortDir {
+                            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+                        } else {
+                            Style::default().fg(Color::White)
+                        },
+                    ),
+                ]);
+                frame.render_widget(
+                    Paragraph::new(sort_line)
+                        .block(focused_block(" [9] Sort ", sort_focused)),
+                    chunk,
+                );
+            }
+            _ => {}
+        }
     }
-    frame.render_widget(
-        Paragraph::new(option_list_text(
-            &app.available_statuses,
-            &state.selected_statuses,
-            state.status_cursor,
-            state.active_row == ActiveRow::Status,
-            false,
-        ))
-        .block(focused_block(" [2] Status ", state.active_row == ActiveRow::Status))
-        .wrap(Wrap { trim: false }),
-        chunks[1],
-    );
-
-    // ── Hidden statuses multi-select ──────────────────────────────────────────
-    if !app.hidden_status_options.is_empty() && state.hidden_status_cursor >= app.hidden_status_options.len() {
-        state.hidden_status_cursor = app.hidden_status_options.len() - 1;
-    }
-    frame.render_widget(
-        Paragraph::new(option_list_text(
-            &app.hidden_status_options,
-            &state.hidden_statuses,
-            state.hidden_status_cursor,
-            state.active_row == ActiveRow::HiddenStatus,
-            false,
-        ))
-        .block(focused_block(" [3] Hidden statuses ", state.active_row == ActiveRow::HiddenStatus))
-        .wrap(Wrap { trim: false }),
-        chunks[2],
-    );
-
-    // ── Component single-select ───────────────────────────────────────────────
-    let comp_total = app.available_components.len() + 1;
-    if state.component_cursor >= comp_total {
-        state.component_cursor = 0;
-    }
-    let comp_options: Vec<String> = std::iter::once("(all)".to_string())
-        .chain(app.available_components.iter().cloned())
-        .collect();
-    let comp_selected: Vec<String> = match &state.selected_component {
-        None => vec!["(all)".to_string()],
-        Some(c) => vec![c.clone()],
-    };
-    frame.render_widget(
-        Paragraph::new(option_list_text(
-            &comp_options,
-            &comp_selected,
-            state.component_cursor,
-            state.active_row == ActiveRow::Component,
-            true,
-        ))
-        .block(focused_block(" [4] Component ", state.active_row == ActiveRow::Component))
-        .wrap(Wrap { trim: false }),
-        chunks[3],
-    );
-
-    // ── Labels multi-select ───────────────────────────────────────────────────
-    let visible_labels = &app.config.defaults.visible_labels;
-    if !visible_labels.is_empty() && state.labels_cursor >= visible_labels.len() {
-        state.labels_cursor = visible_labels.len() - 1;
-    }
-    frame.render_widget(
-        Paragraph::new(option_list_text(
-            visible_labels,
-            &state.selected_labels,
-            state.labels_cursor,
-            state.active_row == ActiveRow::Labels,
-            false,
-        ))
-        .block(focused_block(" [5] Labels ", state.active_row == ActiveRow::Labels))
-        .wrap(Wrap { trim: false }),
-        chunks[4],
-    );
-
-    // ── Team single-select ────────────────────────────────────────────────────
-    let visible_teams = &app.config.defaults.visible_teams;
-    let team_total = visible_teams.len() + 1;
-    if state.team_cursor >= team_total {
-        state.team_cursor = 0;
-    }
-    let team_options: Vec<String> = std::iter::once("(all)".to_string())
-        .chain(visible_teams.iter().map(|t| t.name.clone()))
-        .collect();
-    let team_selected: Vec<String> = match &state.selected_team {
-        None => vec!["(all)".to_string()],
-        Some(id) => visible_teams.iter()
-            .find(|t| &t.id == id)
-            .map(|t| vec![t.name.clone()])
-            .unwrap_or_default(),
-    };
-    frame.render_widget(
-        Paragraph::new(option_list_text(
-            &team_options,
-            &team_selected,
-            state.team_cursor,
-            state.active_row == ActiveRow::Team,
-            true,
-        ))
-        .block(focused_block(" [6] Team ", state.active_row == ActiveRow::Team))
-        .wrap(Wrap { trim: false }),
-        chunks[5],
-    );
-
-    // ── Bool toggles ──────────────────────────────────────────────────────────
-    draw_toggle(frame, chunks[6], "Assigned to me", 7, state.assigned_to_me,
-        state.active_row == ActiveRow::AssignedToMe);
-    draw_toggle(frame, chunks[7], "Sprint active only", 8, state.sprint_active_only,
-        state.active_row == ActiveRow::SprintActive);
-
-    // ── Sort ──────────────────────────────────────────────────────────────────
-    let sort_focused = matches!(state.active_row, ActiveRow::SortBy | ActiveRow::SortDir);
-    let sort_line = Line::from(vec![
-        Span::styled(" Sort by: ", Style::default().fg(Color::DarkGray)),
-        Span::styled(
-            state.sort_by.label(),
-            if state.active_row == ActiveRow::SortBy {
-                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
-            } else {
-                Style::default().fg(Color::White)
-            },
-        ),
-        Span::styled("   Direction: ", Style::default().fg(Color::DarkGray)),
-        Span::styled(
-            state.sort_dir.label(),
-            if state.active_row == ActiveRow::SortDir {
-                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
-            } else {
-                Style::default().fg(Color::White)
-            },
-        ),
-    ]);
-    frame.render_widget(
-        Paragraph::new(sort_line).block(focused_block(" [9] Sort ", sort_focused)),
-        chunks[8],
-    );
 
     // ── Footer ────────────────────────────────────────────────────────────────
     let footer_content = if let Some(err) = &app.error {
@@ -590,7 +662,7 @@ pub fn draw(app: &App, state: &mut FilterPanelState, frame: &mut Frame, area: Re
             Style::default().fg(Color::DarkGray),
         ))
     };
-    frame.render_widget(Paragraph::new(footer_content), chunks[10]);
+    frame.render_widget(Paragraph::new(footer_content), footer_chunk);
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────

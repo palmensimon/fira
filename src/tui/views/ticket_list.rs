@@ -34,9 +34,6 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
                 };
             }
         }
-        KeyCode::Char('c') => {
-            app.view = AppView::CreateTicket;
-        }
         KeyCode::Char('r') => {
             app.current_branch_key = crate::git::current_branch().ok()
                 .and_then(|b| crate::git::extract_ticket_key(&b));
@@ -136,16 +133,8 @@ pub fn draw_bar(app: &App, frame: &mut Frame, area: Rect) {
     } else if let Some(msg) = &app.status_msg {
         Line::from(Span::styled(format!(" {msg}"), Style::default().fg(Color::Green)))
     } else {
-        let hints: &[(&str, &str)] = &[
-            ("Space", "checkout"),
-            ("/", "search"),
-            ("f", "filter"),
-            ("c", "create"),
-            ("r", "refresh"),
-            ("?", "help"),
-        ];
         let mut spans = vec![Span::raw(" ")];
-        for (i, (key, action)) in hints.iter().enumerate() {
+        for (i, (key, action)) in super::help::status_bar_hints(&AppView::TicketList).iter().enumerate() {
             if i > 0 { spans.push(Span::raw("  ")); }
             spans.push(Span::styled(
                 format!("[{key}] {action}"),
@@ -264,7 +253,7 @@ fn build_issue_row<'a>(issue: &'a crate::jira::Issue, current_branch_key: Option
     let status_color = match issue.status() {
         "Done" | "Closed" | "Resolved" => Color::Green,
         "In Progress" | "In Review" => Color::Yellow,
-        "To Do" | "Open" => Color::DarkGray,
+        "To Do" | "Open" => Color::Blue,
         _ => Color::White,
     };
     let component = issue

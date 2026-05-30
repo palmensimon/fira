@@ -104,8 +104,7 @@ impl SettingsState {
 // ── Key handling ─────────────────────────────────────────────────────────────
 
 pub fn handle_key(app: &mut App, state: &mut SettingsState, key: KeyEvent) {
-    let is_save = key.code == KeyCode::Enter
-        || (key.code == KeyCode::Char('s') && key.modifiers.contains(KeyModifiers::CONTROL));
+    let is_save = key.code == KeyCode::Char('s') && key.modifiers.contains(KeyModifiers::CONTROL);
     if is_save {
         match state.build_config(&app.config) {
             Ok(new_cfg) => {

@@ -80,13 +80,13 @@ pub fn handle_key(app: &mut App, state: &mut DetailState, key: KeyEvent) {
                 app.toggle_assignment(&issue);
             }
         }
-        KeyCode::Char('o') => {
+        KeyCode::Char('b') => {
             if let AppView::TicketDetail { issue } = &app.view {
                 let url = format!("{}/browse/{}", app.config.jira.base_url, issue.key);
                 let _ = std::process::Command::new("xdg-open").arg(&url).spawn();
             }
         }
-        KeyCode::Char('p') => {
+        KeyCode::Char('o') => {
             if let AppView::TicketDetail { issue } = &app.view {
                 match find_branch_for_ticket(&issue.key) {
                     None => app.error = Some(format!("No local branch found for {}", issue.key)),
@@ -177,16 +177,8 @@ pub fn draw_bar(app: &App, state: &DetailState, frame: &mut Frame, area: Rect) {
         return;
     }
 
-    let hints: &[(&str, &str)] = &[
-        ("t", "status"),
-        ("Space", "checkout"),
-        ("o", "browser"),
-        ("?", "help"),
-        ("Esc", "back"),
-    ];
-
     let mut spans = vec![Span::raw(" ")];
-    for (i, (key, action)) in hints.iter().enumerate() {
+    for (i, (key, action)) in super::help::status_bar_hints(&app.view).iter().enumerate() {
         if i > 0 { spans.push(Span::raw("  ")); }
         spans.push(Span::styled(
             format!("[{key}] {action}"),

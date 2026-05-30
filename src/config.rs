@@ -61,6 +61,8 @@ pub struct DefaultFilter {
     #[serde(default)]
     pub statuses: Vec<String>,
     #[serde(default)]
+    pub hidden_statuses: Vec<String>,
+    #[serde(default)]
     pub component: Option<String>,
     #[serde(default)]
     pub labels: Vec<String>,
